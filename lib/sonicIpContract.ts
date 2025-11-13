@@ -1,6 +1,5 @@
-// After deployment, update this with your deployed contract address
-// You can find this in the contract-address.json file that's generated after deployment
-export const SONIC_IP_CONTRACT_ADDRESS = "0x123..."; // Replace with actual deployed contract address
+// Updated with deployed contract address on Filecoin Calibration testnet
+export const SONIC_IP_CONTRACT_ADDRESS = "0x332b7fefb103ce489b20D461bdDf253Fe305678E";
 
 export const SONIC_IP_CONTRACT_ABI = [
   {

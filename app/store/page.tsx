@@ -7,9 +7,12 @@ import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { ethers } from "ethers";
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from "@/lib/contract";
 import { useEthersProvider, useEthersSigner } from "@/hooks/useEthers";
-import lighthouse from '@lighthouse-web3/sdk';
-import { audioTokenizationService } from "@/lib/audioTokenizationService";
+// import lighthouse from '@lighthouse-web3/sdk'; // Used dynamically in uploadAudio
+// import { audioTokenizationService } from "@/lib/audioTokenizationService"; // Not used in Self Protocol version
 import { useIP } from "@/contexts/IPContext";
+import { SelfProtocolVerification } from "@/components/SelfProtocolVerification";
+import { CONTRACT_ADDRESSES, SONIC_VERIFICATION_ABI, SONIC_IP_TOKEN_ABI } from "@/lib/contractConfig";
+import { selfProtocolService } from "@/lib/selfProtocolService";
 import { 
   Mic, 
   Square, 
@@ -23,9 +26,9 @@ import {
   Music
 } from "lucide-react";
 
-import Image from "next/image";
+// import Image from "next/image"; // Not used in current version
 import Link from "next/link";
-import Footer from "@/components/Footer";
+// import Footer from "@/components/Footer"; // Not used in current version
 import "./styles.css";
 
 type FaucetChain = typeof base | typeof baseSepolia | typeof avalanche | typeof avalancheFuji;
@@ -81,28 +84,84 @@ export default function AudioRecorder() {
     const timerRef = useRef<number | null>(null);
     const [tokenName, setTokenName] = useState("");
     const [tokenDescription, setTokenDescription] = useState("");
+    
+    // Self Protocol verification states
+    const [isVerified, setIsVerified] = useState(false);
+    const [verificationLoading, setVerificationLoading] = useState(true);
+    const [showVerification, setShowVerification] = useState(false);
+
+  const signer = useEthersSigner();
+  const provider = useEthersProvider();
 
   // Sync selected chain to connected wallet network
   useEffect(() => {
     if (connectedChainId && connectedChainId !== selectedId) {
       setSelectedId(connectedChainId);
     }
-  }, [connectedChainId]);
+  }, [connectedChainId, selectedId]);
 
-  const signer = useEthersSigner();
-  const provider = useEthersProvider();
+  // Lighthouse API key is used in uploadAudio function
+  // const LIGHTHOUSE_API_KEY = process.env.NEXT_PUBLIC_LIGHTHOUSE_API_KEY || "YOUR_API_KEY";
 
-  // Lighthouse API key - replace with your actual API key
-  const LIGHTHOUSE_API_KEY = process.env.NEXT_PUBLIC_LIGHTHOUSE_API_KEY || "YOUR_API_KEY";
+  // Check user verification status
+  const checkVerificationStatus = useCallback(async () => {
+    if (!address || !signer) {
+      setIsVerified(false);
+      setVerificationLoading(false);
+      return;
+    }
 
-  const progressCallback = (progressData: any) => {
-    let percentageDone = ((progressData?.uploaded / progressData?.total) * 100)?.toFixed(2);
-    setUploadProgress(parseFloat(percentageDone) || 0);
-    console.log(percentageDone);
+    try {
+      setVerificationLoading(true);
+      selfProtocolService.setSigner(signer);
+      
+      const status = await selfProtocolService.checkUserVerification(
+        address,
+        CONTRACT_ADDRESSES.SONIC_VERIFICATION,
+        SONIC_VERIFICATION_ABI
+      );
+      
+      setIsVerified(status.isVerified && !status.isExpired);
+    } catch (error) {
+      console.error('Error checking verification:', error);
+      setIsVerified(false);
+    } finally {
+      setVerificationLoading(false);
+    }
+  }, [address, signer]);
+
+  // Handle verification completion
+  const handleVerificationComplete = (result: any) => {
+    console.log('Verification completed:', result);
+    setIsVerified(true);
+    setShowVerification(false);
   };
 
+  // Handle verification error
+  const handleVerificationError = (error: string) => {
+    console.error('Verification error:', error);
+    setShowVerification(true);
+  };
+
+  // Check verification status when user connects
+  useEffect(() => {
+    if (isConnected && address && signer) {
+      checkVerificationStatus();
+    } else {
+      setIsVerified(false);
+      setVerificationLoading(false);
+    }
+  }, [isConnected, address, signer, checkVerificationStatus]);
+
+  // Progress callback is used inline in uploadAudio function
+  // const progressCallback = (progressData: any) => {
+  //   const percentageDone = ((progressData?.uploaded / progressData?.total) * 100)?.toFixed(2);
+  //   setUploadProgress(parseFloat(percentageDone) || 0);
+  //   console.log(percentageDone);
+  // };
+
   const handleTokenize = useCallback(async () => {
-    if (!isConnected || !isMatching || !uploadedFile) return;
+    if (!isConnected || !isMatching || !uploadedFile || !isVerified) return;
     try {
       setIsMinting(true);
       setMintError(null);
@@ -111,8 +170,10 @@ export default function AudioRecorder() {
         throw new Error("Please connect your wallet");
       }
       
-      // Set the signer for the tokenization service
-      audioTokenizationService.setSigner(signer);
+      // Double-check verification before minting
+      if (!isVerified) {
+        throw new Error("Identity verification required. Please complete Self Protocol verification first.");
+      }
       
       // Create metadata for the token
       const metadata = {
@@ -125,24 +186,49 @@ export default function AudioRecorder() {
       
       const audioCid = uploadedFile.data.Hash;
       
-      // In a production environment, you would mint the NFT here
-      // This is just a simulation for the frontend demo
+      // Mint NFT using the new Self Protocol integrated contract
       try {
-        console.log("Tokenizing audio with metadata:", {
+        console.log("Tokenizing audio with Self Protocol verification:", {
           ...metadata,
-          audioCid
+          audioCid,
+          contractAddress: CONTRACT_ADDRESSES.SONIC_IP_TOKEN
         });
         
-        // Simulating blockchain transaction time
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Create contract instance with new Self Protocol integrated contract
+        const contract = new ethers.Contract(
+          CONTRACT_ADDRESSES.SONIC_IP_TOKEN,
+          SONIC_IP_TOKEN_ABI,
+          signer
+        );
+        
+        // Mint the audio token (this will automatically check Self Protocol verification)
+        const tx = await contract.mintAudioToken(
+          address,
+          `https://gateway.lighthouse.storage/ipfs/${audioCid}`, // metadata URI
+          audioCid // audio hash
+        );
+        
+        setTransactionStatus(`Minting transaction submitted! Hash: ${tx.hash.slice(0, 10)}...`);
+        
+        // Wait for transaction confirmation
+        const receipt = await tx.wait();
+        setTransactionStatus("NFT minted successfully!");
+        
+        console.log("NFT minted successfully:", receipt);
         
         // Success!
         setMintError(null);
         
         // Now proceed with storing the CID
         await handleStore();
-      } catch (mintError) {
+      } catch (mintError: unknown) {
         console.error("Error minting token:", mintError);
+        
+        // Handle specific Self Protocol verification errors
+        if (mintError instanceof Error && mintError.message?.includes("Creator must be verified")) {
+          throw new Error("Self Protocol verification required. Please complete identity verification first.");
+        }
+        
         throw new Error("Failed to mint token: " + (mintError instanceof Error ? mintError.message : String(mintError)));
       }
     } catch (e) {
@@ -152,7 +238,7 @@ export default function AudioRecorder() {
     } finally {
       setIsMinting(false);
     }
-  }, [isConnected, isMatching, provider, signer, uploadedFile, tokenName, tokenDescription, address]);
+  }, [isConnected, isMatching, provider, signer, uploadedFile, tokenName, tokenDescription, address, isVerified]);
 
   const handleStore = useCallback(async () => {
     if (!isConnected || !isMatching || !uploadedFile) return;
@@ -188,7 +274,7 @@ export default function AudioRecorder() {
           receipt = await tx.wait(1); // Wait for 1 confirmation
           setTransactionStatus("Transaction confirmed!");
           break;
-        } catch (waitError: any) {
+        } catch (waitError: unknown) {
           retries++;
           console.log(`Transaction wait attempt ${retries} failed:`, waitError);
           
@@ -242,6 +328,12 @@ export default function AudioRecorder() {
 
   // Audio Recording Functions
   const startRecording = async () => {
+    // Check verification first
+    if (!isVerified) {
+      setShowVerification(true);
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
@@ -449,6 +541,49 @@ export default function AudioRecorder() {
                     </div>
                 ) : (
                     <div className="space-y-6">
+                        {/* Step 0: Self Protocol Verification */}
+                        {(!isVerified || showVerification) && (
+                            <div className="bg-[var(--card-background)] border border-[var(--border-color)] rounded-xl p-6">
+                                <div className="flex items-center mb-4">
+                                    <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white font-bold text-sm mr-3">🔐</div>
+                                    <h2 className="text-xl font-bold text-white">Identity Verification Required</h2>
+                                </div>
+                                <p className="text-gray-400 mb-6">
+                                    To create and tokenize audio on Sonic SAT, you must verify your identity using Self Protocol. 
+                                    This ensures only real humans can create content and prevents fraud.
+                                </p>
+                                
+                                {verificationLoading ? (
+                                    <div className="text-center py-8">
+                                        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                                        <p className="text-gray-400">Checking verification status...</p>
+                                    </div>
+                                ) : (
+                                    <SelfProtocolVerification
+                                        onVerificationComplete={handleVerificationComplete}
+                                        onVerificationError={handleVerificationError}
+                                        contractAddress={CONTRACT_ADDRESSES.SONIC_VERIFICATION}
+                                        contractABI={SONIC_VERIFICATION_ABI}
+                                    />
+                                )}
+                            </div>
+                        )}
+
+                        {/* Verification Success Banner */}
+                        {isVerified && !showVerification && (
+                            <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 mb-6">
+                                <div className="flex items-center">
+                                    <CheckCircle className="w-6 h-6 text-green-400 mr-3" />
+                                    <div>
+                                        <p className="font-medium text-green-400">Identity Verified ✓</p>
+                                        <p className="text-sm text-gray-300 mt-1">
+                                            You're verified with Self Protocol. You can now record and tokenize audio.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Step 1: Record Audio */}
                         <div className="bg-[var(--card-background)] border border-[var(--border-color)] rounded-xl p-6">
                             <div className="flex items-center mb-4">
@@ -462,12 +597,14 @@ export default function AudioRecorder() {
                                 <div className="text-center py-8">
                                     <button
                                         onClick={isRecording ? stopRecording : startRecording}
-                                        disabled={!isConnected || !isMatching}
+                                        disabled={!isConnected || !isMatching || !isVerified}
                                         className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-4 transition-all ${
                                             isRecording 
                                                 ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
-                                                : 'bg-blue-500 hover:bg-blue-600'
-                                        } ${(!isConnected || !isMatching) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                : isVerified 
+                                                    ? 'bg-blue-500 hover:bg-blue-600'
+                                                    : 'bg-gray-500'
+                                        } ${(!isConnected || !isMatching || !isVerified) ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     >
                                         {isRecording ? (
                                             <Square className="w-8 h-8 text-white" />
@@ -476,10 +613,20 @@ export default function AudioRecorder() {
                                         )}
                                     </button>
                                     <p className="text-white font-medium">
-                                        {isRecording ? `Recording... ${formatTime(recordingTime)}` : 'Click to start recording'}
+                                        {isRecording 
+                                            ? `Recording... ${formatTime(recordingTime)}` 
+                                            : isVerified 
+                                                ? 'Click to start recording'
+                                                : 'Identity verification required'
+                                        }
                                     </p>
                                     <p className="text-gray-400 text-sm mt-2">
-                                        {isRecording ? 'Click the button again to stop' : 'Speak clearly into your microphone'}
+                                        {isRecording 
+                                            ? 'Click the button again to stop' 
+                                            : isVerified 
+                                                ? 'Speak clearly into your microphone'
+                                                : 'Complete Self Protocol verification above to start recording'
+                                        }
                                     </p>
                                 </div>
                             ) : (
@@ -689,7 +836,7 @@ export default function AudioRecorder() {
                                     {/* Tokenize Button */}
                                     <button
                                         onClick={handleTokenize}
-                                        disabled={isMinting || !isConnected || !isMatching || !tokenName.trim() || !tokenDescription.trim() || !priceAmount || parseFloat(priceAmount) <= 0}
+                                        disabled={isMinting || !isConnected || !isMatching || !isVerified || !tokenName.trim() || !tokenDescription.trim() || !priceAmount || parseFloat(priceAmount) <= 0}
                                         className="w-full bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                     >
                                         {isMinting || isStoring ? (

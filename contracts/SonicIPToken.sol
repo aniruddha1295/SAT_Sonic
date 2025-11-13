@@ -4,26 +4,34 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "./SonicSelfVerification.sol";
 
 /**
  * @title SonicIPToken
- * @dev ERC721 token for Sonic IP audio recordings
+ * @dev ERC721 token for Sonic IP audio recordings with Self Protocol verification
  */
 contract SonicIPToken is ERC721URIStorage, Ownable {
     uint256 private _tokenIdCounter;
     
+    // Self Protocol verification contract
+    SonicSelfVerification public immutable verificationContract;
+    
     // Mapping from token ID to metadata hash
     mapping(uint256 => string) private _audioMetadata;
+    
+    // Mapping from token ID to creator verification status at mint time
+    mapping(uint256 => bool) private _creatorVerifiedAtMint;
     
     // Events
     event AudioTokenized(uint256 indexed tokenId, address indexed creator, string metadataURI);
 
-    constructor() ERC721("SonicIPToken", "SONIC") Ownable(msg.sender) {
+    constructor(address verificationContractAddress) ERC721("SonicIPToken", "SONIC") Ownable(msg.sender) {
+        verificationContract = SonicSelfVerification(verificationContractAddress);
         _tokenIdCounter = 0;
     }
 
     /**
-     * @dev Creates a new token for an audio recording
+     * @dev Creates a new token for an audio recording (requires Self Protocol verification)
      * @param to The address that will own the minted token
      * @param metadataURI The IPFS URI for the token metadata
      * @param audioHash The IPFS hash of the audio file
@@ -34,12 +42,22 @@ contract SonicIPToken is ERC721URIStorage, Ownable {
         string memory metadataURI,
         string memory audioHash
     ) public returns (uint256) {
+        // Require Self Protocol verification
+        (bool isVerified, , ) = verificationContract.isUserVerified(to);
+        require(isVerified, "SonicIPToken: Creator must be verified via Self Protocol");
+        
         uint256 tokenId = _tokenIdCounter;
         _tokenIdCounter++;
+        
+        // Record verification status at mint time
+        _creatorVerifiedAtMint[tokenId] = true;
         
         _safeMint(to, tokenId);
         _setTokenURI(tokenId, metadataURI);
         _audioMetadata[tokenId] = audioHash;
+        
+        // Update creator stats in verification contract
+        verificationContract.updateCreatorStats(to);
         
         emit AudioTokenized(tokenId, to, metadataURI);
         
@@ -84,6 +102,40 @@ contract SonicIPToken is ERC721URIStorage, Ownable {
             }
         }
         revert("SonicIPToken: owner index out of bounds");
+    }
+
+    /**
+     * @dev Check if token was created by a verified creator
+     * @param tokenId The token ID to check
+     * @return True if creator was verified at mint time
+     */
+    function isTokenFromVerifiedCreator(uint256 tokenId) public view returns (bool) {
+        require(_exists(tokenId), "SonicIPToken: Query for nonexistent token");
+        return _creatorVerifiedAtMint[tokenId];
+    }
+    
+    /**
+     * @dev Get creator verification info for a token
+     * @param tokenId The token ID to check
+     * @return creator The original creator address
+     * @return wasVerified Whether creator was verified at mint time
+     * @return currentlyVerified Whether creator is currently verified
+     */
+    function getTokenVerificationInfo(uint256 tokenId) public view returns (
+        address creator,
+        bool wasVerified,
+        bool currentlyVerified
+    ) {
+        require(_exists(tokenId), "SonicIPToken: Query for nonexistent token");
+        
+        // Get the original creator (first owner)
+        creator = ownerOf(tokenId);
+        wasVerified = _creatorVerifiedAtMint[tokenId];
+        
+        // Check current verification status
+        (currentlyVerified, , ) = verificationContract.isUserVerified(creator);
+        
+        return (creator, wasVerified, currentlyVerified);
     }
 
     function _exists(uint256 tokenId) internal view returns (bool) {

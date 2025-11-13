@@ -1,0 +1,23 @@
+{
+  "network": "Filecoin Calibration Testnet",
+  "chainId": 314159,
+  "deployedAt": "2025-11-13",
+  "contracts": {
+    "SonicSelfVerification": {
+      "address": "0xe797FD53EE2254af2D2d35399486E53b7e6ba5d5",
+      "description": "Self Protocol verification contract for identity verification",
+      "blockExplorer": "https://calibration.filscan.io/address/0xe797FD53EE2254af2D2d35399486E53b7e6ba5d5"
+    },
+    "SonicIPToken": {
+      "address": "0x332b7fefb103ce489b20D461bdDf253Fe305678E",
+      "description": "Enhanced NFT contract with Self Protocol verification requirements",
+      "blockExplorer": "https://calibration.filscan.io/address/0x332b7fefb103ce489b20D461bdDf253Fe305678E"
+    }
+  },
+  "integration": {
+    "verificationRequired": true,
+    "minimumAge": 18,
+    "supportedVerificationLevels": ["Basic", "Enhanced", "Premium"],
+    "verificationValidityPeriod": "365 days"
+  }
+}
